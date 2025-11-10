@@ -44,8 +44,13 @@ class MarketMaker:
     def __init__(self, ss: SharedState) -> None:
         self.ss = ss
         self.features = Features(self.ss)
-        self.tick_size = self.ss.bybit_tick_size
-        self.lot_size = self.ss.bybit_lot_size
+        # Support both Bybit and Hyperliquid
+        if hasattr(ss, 'primary_exchange') and ss.primary_exchange == "HYPERLIQUID":
+            self.tick_size = self.ss.hyperliquid_tick_size
+            self.lot_size = self.ss.hyperliquid_lot_size
+        else:
+            self.tick_size = self.ss.bybit_tick_size
+            self.lot_size = self.ss.bybit_lot_size
         self.spread = self._adjusted_spread_()
 
     def _skew_(self) -> Tuple[float, float]:
@@ -96,7 +101,12 @@ class MarketMaker:
         float
             The adjusted spread value.
         """
-        multiplier = (self.ss.volatility_value * 100) / self.ss.bybit_mid
+        # Get mid price based on primary exchange
+        if hasattr(self.ss, 'primary_exchange') and self.ss.primary_exchange == "HYPERLIQUID":
+            mid_price = self.ss.hyperliquid_mid
+        else:
+            mid_price = self.ss.bybit_mid
+        multiplier = (self.ss.volatility_value * 100) / mid_price
         return self.ss.base_spread * nbclip(multiplier, 1, 10)
 
     def _prices_(self, bid_skew: float, ask_skew: float) -> Tuple[NDArray, NDArray]:
@@ -120,7 +130,11 @@ class MarketMaker:
         Tuple[np.ndarray, np.ndarray]
             Arrays of bid and ask prices.
         """
-        best_bid, best_ask = self.ss.bybit_bba[:, 0]
+        # Get BBA based on primary exchange
+        if hasattr(self.ss, 'primary_exchange') and self.ss.primary_exchange == "HYPERLIQUID":
+            best_bid, best_ask = self.ss.hyperliquid_bba[:, 0]
+        else:
+            best_bid, best_ask = self.ss.bybit_bba[:, 0]
 
         # Inventory is too short, dont quote asks
         if bid_skew >= 1:

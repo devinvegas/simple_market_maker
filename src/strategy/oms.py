@@ -1,7 +1,8 @@
 import asyncio
 from typing import List, Tuple, Coroutine, Union
 from src.utils.jit_funcs import nbabs
-from src.exchanges.bybit.post.order import Order
+from src.exchanges.bybit.post.order import Order as BybitOrder
+from src.exchanges.hyperliquid.post.order import Order as HyperliquidOrder
 from src.sharedstate import SharedState
 
 class OMS:
@@ -27,6 +28,12 @@ class OMS:
 
     def __init__(self, ss: SharedState) -> None:
         self.ss = ss
+        # Determine which exchange to use
+        primary_exchange = getattr(ss, 'primary_exchange', 'BYBIT').upper()
+        if primary_exchange == "HYPERLIQUID":
+            self.Order = HyperliquidOrder
+        else:
+            self.Order = BybitOrder
 
     def segregate_current_orders(self) -> Tuple[List, List]:
         buys, sells = [], []
@@ -78,16 +85,16 @@ class OMS:
     
     async def amend_orders(self, current_orders: List, new_orders: List) -> Coroutine:
         tasks = [
-            asyncio.create_task(Order(self.ss).amend((current[0], new[1], new[2])))
+            asyncio.create_task(self.Order(self.ss).amend((current[0], new[1], new[2])))
             for current, new in zip(current_orders, new_orders)
-            if nbabs(current[2] - new[1]) > self.ss.buffer
+            if nbabs(current[2] - new[1]) > getattr(self.ss, 'buffer', 0.1)
         ]
         return await asyncio.gather(*tasks)
 
     async def replace_orders(self, to_cancel: List, to_send: List) -> Coroutine:
         ids_to_cancel = [order[0] for order in to_cancel]
-        tasks = [Order(self.ss).cancel_batch(ids_to_cancel)]
-        tasks.append(Order(self.ss).order_limit_batch(to_send))
+        tasks = [self.Order(self.ss).cancel_batch(ids_to_cancel)]
+        tasks.append(self.Order(self.ss).order_limit_batch(to_send))
         return await asyncio.gather(*tasks)
 
     async def run(self, new_orders: List[Tuple[str, float, float]], spread: float) -> None:
@@ -120,8 +127,8 @@ class OMS:
         # 1st check
         # if not self.ss.current_orders:
         # print("1st check triggered here!")
-        await Order(self.ss).cancel_all()
-        await Order(self.ss).order_limit_batch(new_orders)
+        await self.Order(self.ss).cancel_all()
+        await self.Order(self.ss).order_limit_batch(new_orders)
         # print(f"New orders: {self._orders_within_spread_(new_orders, spread)}")
         current_bids, current_asks = self.segregate_current_orders()
         # print(f"Current orders: {self._orders_within_spread_(current_bids + current_asks, spread)}")
@@ -161,8 +168,8 @@ class OMS:
         # 3rd check
         if current_sides_len - new_sides_len != 0:
             print("3rd check triggered here!")
-            await Order(self.ss).cancel_all()
-            await Order(self.ss).order_limit_batch(new_orders)
+            await self.Order(self.ss).cancel_all()
+            await self.Order(self.ss).order_limit_batch(new_orders)
 
         # 4th check
         if new_best_bids and new_best_asks:
@@ -175,10 +182,10 @@ class OMS:
         amend_batches = []
 
         for current, new in zip(current_outer_bids + current_outer_asks, new_outer_bids + new_outer_asks):
-            if nbabs(current[2] - new[1]) > self.ss.buffer:
+            if nbabs(current[2] - new[1]) > getattr(self.ss, 'buffer', 0.1):
                 amend_batches.append([current[0], new[1], new[2]])
 
         if amend_batches:
-            await Order(self.ss).amend_batch(amend_batches)
+            await self.Order(self.ss).amend_batch(amend_batches)
 
         return None

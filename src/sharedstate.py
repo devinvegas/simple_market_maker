@@ -9,6 +9,7 @@ from numpy.typing import NDArray
 from src.exchanges.common.localorderbook import BaseOrderBook
 from src.exchanges.binance.websockets.handlers.orderbook import OrderBookBinance
 from src.exchanges.bybit.websockets.handlers.orderbook import OrderBookBybit
+from src.exchanges.hyperliquid.websockets.handlers.orderbook import OrderBookHyperliquid
 
 class SharedState:
     """
@@ -66,6 +67,16 @@ class SharedState:
         self.bybit_book = OrderBookBybit()
         self.bybit_mark_price = 0
 
+        # Initialize market data attributes for Hyperliquid
+        self.hyperliquid_ws_connected = False
+        self.hyperliquid_klines = RingBuffer(capacity=500, dtype=(float, 7))
+        self.hyperliquid_trades = RingBuffer(capacity=1000, dtype=(float, 4))
+        self.hyperliquid_bba = np.ones((2, 2), dtype=np.float64)
+        self.hyperliquid_book = OrderBookHyperliquid()
+        self.hyperliquid_mark_price = 0
+        self.hyperliquid_tick_size = 0
+        self.hyperliquid_lot_size = 0
+
         # Other shared attributes
         self.current_orders = {}
         self.execution_feed = deque(maxlen=100)
@@ -78,9 +89,11 @@ class SharedState:
         Updates trading parameters and settings from a dictionary of settings.
         """
         if not reload:
-            self.primary_data_feed = str(settings["primary_data_feed"]).upper()
-            self.binance_symbol = str(settings["binance_symbol"])
-            self.bybit_symbol = str(settings["bybit_symbol"])
+            self.primary_exchange = str(settings.get("primary_exchange", "BYBIT")).upper()
+            self.primary_data_feed = str(settings.get("primary_data_feed", "BYBIT")).upper()
+            self.binance_symbol = str(settings.get("binance_symbol", ""))
+            self.bybit_symbol = str(settings.get("bybit_symbol", ""))
+            self.hyperliquid_symbol = str(settings.get("hyperliquid_symbol", ""))
 
         self.account_size = float(settings["account_size"])
         self.bb_length = int(settings["bollinger_band_length"])
@@ -134,6 +147,18 @@ class SharedState:
     @property
     def bybit_vamp(self) -> float:
         return self.calculate_vamp(self.bybit_book)
+    
+    @property
+    def hyperliquid_mid(self) -> float:
+        return self.calculate_mid(self.hyperliquid_bba)
+
+    @property
+    def hyperliquid_wmid(self) -> float:
+        return self.calculate_wmid(self.hyperliquid_bba)
+    
+    @property
+    def hyperliquid_vamp(self) -> float:
+        return self.calculate_vamp(self.hyperliquid_book)
 
     @staticmethod
     def calculate_mid(bba: NDArray) -> float:

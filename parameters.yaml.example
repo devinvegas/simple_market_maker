@@ -1,8 +1,10 @@
 account_size: 100
-primary_data_feed: Binance # Choices: ["Binance", "Bybit"]
+primary_exchange: Bybit # Choices: ["Bybit", "Hyperliquid"]
+primary_data_feed: Binance # Choices: ["Binance", "Bybit"] - Optional feed when primary_exchange is Hyperliquid
 
 binance_symbol: ETHUSDT 
-bybit_symbol: ETHUSDT 
+bybit_symbol: ETHUSDT
+hyperliquid_symbol: ETH 
 
 # Master offsets 
 price_offset: 0.0 
