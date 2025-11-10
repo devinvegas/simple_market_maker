@@ -1,6 +1,6 @@
 account_size: 100
 primary_exchange: Bybit # Choices: ["Bybit", "Hyperliquid"]
-primary_data_feed: Binance # Choices: ["Binance", "Bybit"] - Optional feed when primary_exchange is Hyperliquid
+primary_data_feed: Binance # Choices: ["Binance", "Bybit"] - Optional feed: Binance for Bybit, Binance for Hyperliquid
 
 binance_symbol: ETHUSDT 
 bybit_symbol: ETHUSDT

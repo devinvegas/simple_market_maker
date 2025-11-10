@@ -81,9 +81,9 @@ class Features:
             base=self.ss.hyperliquid_wmid
         )
 
-    def bybit_hyperliquid_wmid_spread(self) -> float:
+    def binance_hyperliquid_wmid_spread(self) -> float:
         return log_price_difference(
-            follow=self.ss.bybit_wmid, 
+            follow=self.ss.binance_wmid, 
             base=self.ss.hyperliquid_wmid
         )
 
@@ -117,19 +117,19 @@ class Features:
 
         if primary_exchange == "HYPERLIQUID":
             # Hyperliquid as primary exchange
-            if self.ss.primary_data_feed == "BYBIT":
-                # Use Bybit as optional feed (like Binance for Bybit)
+            if self.ss.primary_data_feed == "BINANCE":
+                # Use Binance as optional feed (like Binance for Bybit)
                 # Total weight = 0.4
                 total_skew += self.hyperliquid_bba_imbalance() * 0.025
-                total_skew += self.bybit_bba_imbalance() * 0.025
+                total_skew += self.binance_bba_imbalance() * 0.025
                 total_skew += self.hyperliquid_mark_wmid_spread() * 0.075
-                total_skew += self.bybit_hyperliquid_wmid_spread() * 0.075
+                total_skew += self.binance_hyperliquid_wmid_spread() * 0.075
                 total_skew += self.hyperliquid_wmid_vamp_spread() * 0.075
-                total_skew += self.bybit_wmid_vamp_spread() * 0.075
+                total_skew += self.binance_wmid_vamp_spread() * 0.075
 
                 # Total weight = 0.6
-                total_skew += self.bybit_orderbook_imbalance() * 0.2
-                total_skew += self.bybit_trades_imbalance() * 0.2
+                total_skew += self.binance_orderbook_imbalance() * 0.2
+                total_skew += self.binance_trades_imbalance() * 0.2
                 total_skew += self.hyperliquid_orderbook_imbalance() * 0.1
                 total_skew += self.hyperliquid_trades_imbalance() * 0.1
             else:

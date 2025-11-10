@@ -39,9 +39,9 @@ class DataFeeds:
             tasks.append(asyncio.create_task(HyperliquidMarketData(self.ss).start_feed()))
             tasks.append(asyncio.create_task(HyperliquidPrivateData(self.ss).start_feed()))
             
-            # Optional Bybit feed (like Binance for Bybit)
-            if self.ss.primary_data_feed == "BYBIT":
-                tasks.append(asyncio.create_task(BybitMarketData(self.ss).start_feed()))
+            # Optional Binance feed (like Binance for Bybit)
+            if self.ss.primary_data_feed == "BINANCE":
+                tasks.append(asyncio.create_task(BinanceMarketData(self.ss).start_feed()))
         else:
             # Bybit as primary exchange (default)
             tasks.append(asyncio.create_task(BybitMarketData(self.ss).start_feed()))
@@ -82,8 +82,8 @@ class Strategy:
             if primary_exchange == "HYPERLIQUID":
                 if not self.ss.hyperliquid_ws_connected:
                     continue
-                # Optional Bybit feed
-                if self.ss.primary_data_feed == "BYBIT" and not self.ss.bybit_ws_connected:
+                # Optional Binance feed
+                if self.ss.primary_data_feed == "BINANCE" and not self.ss.binance_ws_connected:
                     continue
             else:
                 # Bybit as primary
