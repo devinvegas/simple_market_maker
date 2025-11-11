@@ -70,4 +70,10 @@ class HyperliquidTradesHandler:
                 side = 0.0 if side_str == "Buy" or side_str == "B" else 1.0
                 new_trade = np.array([[time, side, price, qty]])
                 self.ss.hyperliquid_trades.append(new_trade)
+                # Fallback: if ticker mark is missing, use last trade price as temporary anchor
+                try:
+                    if price and price > 0 and getattr(self.ss, "hyperliquid_mark_price", 0.0) <= 0:
+                        self.ss.hyperliquid_mark_price = float(price)
+                except Exception:
+                    pass
 

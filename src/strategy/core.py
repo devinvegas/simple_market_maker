@@ -9,6 +9,7 @@ from src.strategy.marketmaker import MarketMaker
 from src.strategy.oms import OMS
 from src.sharedstate import SharedState
 
+
 class DataFeeds:
     """
     Initializes and manages WebSocket data feeds for market and private data from Bybit, Hyperliquid, and Binance.
@@ -119,12 +120,40 @@ class Strategy:
             if primary_exchange == "HYPERLIQUID":
                 if self.ss.hyperliquid_tick_size == 0 or self.ss.hyperliquid_lot_size == 0:
                     continue  # Wait until precision is fetched
-                # Minimal gating: rely on WS confirmation and precision only
+                # Minimal gating only
             else:
                 if self.ss.bybit_tick_size == 0 or self.ss.bybit_lot_size == 0:
                     continue  # Wait until precision is fetched
             
-            new_orders, spread = MarketMaker(self.ss).generate_quotes(debug=False)
+            # Debug: snapshot of inputs before quote gen
+            try:
+                if primary_exchange == "HYPERLIQUID":
+                    bb, ba = tuple(self.ss.hyperliquid_bba[:, 0])
+                    mid = float(self.ss.hyperliquid_mid)
+                    mark = float(getattr(self.ss, "hyperliquid_mark_price", 0.0))
+                    tick = self.ss.hyperliquid_tick_size
+                    lot = self.ss.hyperliquid_lot_size
+                else:
+                    bb, ba = tuple(self.ss.bybit_bba[:, 0])
+                    mid = float(self.ss.bybit_mid)
+                    mark = 0.0
+                    tick = self.ss.bybit_tick_size
+                    lot = self.ss.bybit_lot_size
+                print(f"{dt_now()}: PRE-QUOTE state | bb={bb:.6f} ba={ba:.6f} mid={mid:.6f} mark={mark:.6f} tick={tick} lot={lot} pos_szi={getattr(self.ss,'position_szi',0.0)} inv={getattr(self.ss,'inventory_delta',0.0)} qps={getattr(self.ss,'max_quotes_per_side',2)}")
+            except Exception as e:
+                print(f"{dt_now()}: PRE-QUOTE state log error: {e}")
+
+            new_orders, spread = MarketMaker(self.ss).generate_quotes(debug=True)
+
+            # Debug: after quote gen
+            try:
+                n_b = len([o for o in new_orders if o[0] == "Buy"])
+                n_a = len([o for o in new_orders if o[0] == "Sell"])
+                preview = ", ".join([f"{o[0]}@{o[1]:.6f}x{o[2]:.6f}" for o in new_orders[:min(4,len(new_orders))]])
+                print(f"{dt_now()}: POST-QUOTE | spread={spread:.6f} buys={n_b} sells={n_a} sample=[{preview}]")
+            except Exception:
+                pass
+
             await OMS(self.ss).run(new_orders, spread)
 
     async def run(self) -> None:

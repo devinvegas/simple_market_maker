@@ -6,6 +6,8 @@ from src.exchanges.hyperliquid.endpoints import ApiEndpoints
 from src.exchanges.hyperliquid.post.types import HyperliquidFormats
 from src.sharedstate import SharedState
 
+from src.utils.misc import datetime_now as dt_now
+
 
 class Order:
     """
@@ -212,7 +214,17 @@ class Order:
         
         payload = {"action": action}
         
+        try:
+            sample = ", ".join([f"{o[0]}@{o[1]}x{o[2]}" for o in orders[:min(4,len(orders))]])
+            print(f"{dt_now()}: POST /exchange order_limit_batch | asset_id={asset_id} count={len(orders)} sample=[{sample}]")
+        except Exception:
+            pass
+
         result = await self._sessionless_submit_(endpoint, payload)
+        try:
+            print(f"{dt_now()}: order_limit_batch result: {str(result)[:200]}")
+        except Exception:
+            pass
         await self.close_session()
         return result
          
@@ -326,7 +338,16 @@ class Order:
         
         payload = {"action": action}
         
+        try:
+            print(f"{dt_now()}: POST /exchange cancel_batch | asset_id={asset_id} oids={order_ids[:10]}")
+        except Exception:
+            pass
+
         result = await self._sessionless_submit_(endpoint, payload)
+        try:
+            print(f"{dt_now()}: cancel_batch result: {str(result)[:200]}")
+        except Exception:
+            pass
         await self.close_session()
         return result
 
@@ -361,8 +382,10 @@ class Order:
             pass
 
         if not oids:
+            print(f"{dt_now()}: cancel_all | nothing to cancel")
             return {"status": "ok"}
 
+        print(f"{dt_now()}: cancel_all | cancelling {len(oids)} orders")
         return await self.cancel_batch([str(oid) for oid in oids])
     
     async def close_session(self) -> None:

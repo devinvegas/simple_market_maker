@@ -5,6 +5,8 @@ from src.exchanges.bybit.post.order import Order as BybitOrder
 from src.exchanges.hyperliquid.post.order import Order as HyperliquidOrder
 from src.sharedstate import SharedState
 
+from src.utils.misc import datetime_now as dt_now
+
 class OMS:
     """
     Manages the order lifecycle for Bybit, including segregating, amending, and placing orders based on strategy needs.
@@ -127,8 +129,20 @@ class OMS:
         # 1st check
         # if not self.ss.current_orders:
         # print("1st check triggered here!")
-        await self.Order(self.ss).cancel_all()
-        await self.Order(self.ss).order_limit_batch(new_orders)
+        try:
+            n_b = len([o for o in new_orders if o[0] == "Buy"])
+            n_a = len([o for o in new_orders if o[0] == "Sell"])
+            print(f"{dt_now()}: OMS RUN | will cancel_all then place batch | buys={n_b} sells={n_a}")
+        except Exception:
+            pass
+
+        resp_cancel = await self.Order(self.ss).cancel_all()
+        if resp_cancel is not None:
+            print(f"{dt_now()}: OMS cancel_all resp: {str(resp_cancel)[:200]}")
+
+        resp_place = await self.Order(self.ss).order_limit_batch(new_orders)
+        if resp_place is not None:
+            print(f"{dt_now()}: OMS order_limit_batch resp: {str(resp_place)[:200]}")
         # print(f"New orders: {self._orders_within_spread_(new_orders, spread)}")
         current_bids, current_asks = self.segregate_current_orders()
         # print(f"Current orders: {self._orders_within_spread_(current_bids + current_asks, spread)}")

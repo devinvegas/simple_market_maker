@@ -56,20 +56,15 @@ class HyperliquidPublicWs:
         # Format: {"method": "subscribe", "subscription": {...}}
         subscriptions = []
         topic_list = []
+        want_l2 = False
         
         for topic in topics:
             if topic == "Orderbook":
-                depth = kwargs.get("depth", 500)
-                subscriptions.append({
-                    "type": "l2Book",
-                    "coin": self.symbol
-                })
+                want_l2 = True
                 topic_list.append(f"l2Book-{self.symbol}")
             elif topic == "BBA":
-                subscriptions.append({
-                    "type": "l2Book",
-                    "coin": self.symbol
-                })
+                # Use the same l2Book stream; avoid duplicate subscription
+                want_l2 = True
                 topic_list.append(f"bba-{self.symbol}")
             elif topic == "Trades":
                 subscriptions.append({
@@ -91,12 +86,20 @@ class HyperliquidPublicWs:
                     "interval": f"{interval}m"
                 })
                 topic_list.append(f"candle-{self.symbol}-{interval}m")
+
+        if want_l2:
+            subscriptions.insert(0, {
+                "type": "l2Book",
+                "coin": self.symbol
+            })
         
-        # Hyperliquid uses a single subscription message
-        req = json.dumps({
-            "method": "subscribe",
-            "subscription": subscriptions[0] if len(subscriptions) == 1 else subscriptions
-        })
-        
-        return req, topic_list
+        # Build one request per subscription (server rejects arrays)
+        reqs = []
+        for sub in subscriptions:
+            reqs.append(json.dumps({
+                "method": "subscribe",
+                "subscription": sub
+            }))
+
+        return reqs, topic_list
 

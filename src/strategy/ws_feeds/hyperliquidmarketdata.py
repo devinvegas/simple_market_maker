@@ -31,7 +31,7 @@ class HyperliquidMarketData:
         """
         self.ss = ss
         self.public_ws = HyperliquidPublicWs(self.ss)
-        self.ws_req, self.ws_topics = self.public_ws.multi_stream_request(
+        self.ws_reqs, self.ws_topics = self.public_ws.multi_stream_request(
             topics=self._topics_, 
             depth=500, 
             interval=1
@@ -44,6 +44,11 @@ class HyperliquidMarketData:
             self.ws_topics[3]: HyperliquidTickerHandler(self.ss).process,
             self.ws_topics[4]: HyperliquidKlineHandler(self.ss).process,
         }
+        # Keep references for explicit dispatch and one-time debug
+        self._bba_handler = HyperliquidBBAHandler(self.ss)
+        self._ticker_handler = HyperliquidTickerHandler(self.ss)
+        self._log_once_l2 = False
+        self._log_once_ticker = False
 
     async def _initialize_(self) -> None:
         """
@@ -171,7 +176,11 @@ class HyperliquidMarketData:
             self.ss.hyperliquid_ws_connected = True
 
             try:
-                await websocket.send(self.ws_req)
+                # Send each subscription message individually
+                for req in self.ws_reqs:
+                    await websocket.send(req)
+
+                raw_logged = 0
 
                 while True:
                     recv = orjson.loads(await websocket.recv())
@@ -179,22 +188,110 @@ class HyperliquidMarketData:
                     if "success" in recv or "error" in recv:
                         continue
 
+                    # Unconditional one-time raw message logging (first 3 messages)
+                    if raw_logged < 3:
+                        try:
+                            print(f"{dt_now()}: DEBUG raw ws msg: {orjson.dumps(recv)[:400].decode()}")
+                        except Exception:
+                            pass
+                        raw_logged += 1
+
                     # Hyperliquid WebSocket message format may differ
                     # Adjust based on actual message structure
                     handler = None
                     if "channel" in recv:
-                        channel = recv["channel"]
-                        handler = self.topic_handler_map.get(channel)
+                        channel = str(recv["channel"]).lower()
+                        # One-time sample log for channel-based messages
+                        if not self._log_once_l2 and "l2book" in channel:
+                            try:
+                                print(f"{dt_now()}: DEBUG first l2Book (channel) msg: {orjson.dumps(recv)[:350].decode()}")
+                            except Exception:
+                                pass
+                            self._log_once_l2 = True
+                        if not self._log_once_ticker and "ticker" in channel:
+                            try:
+                                print(f"{dt_now()}: DEBUG first ticker (channel) msg: {orjson.dumps(recv)[:350].decode()}")
+                            except Exception:
+                                pass
+                            self._log_once_ticker = True
+
+                        # Direct routing by channel name
+                        if "l2book" in channel:
+                            try:
+                                self.ss.hyperliquid_book.process(recv)
+                            except Exception:
+                                pass
+                            try:
+                                self._bba_handler.process(recv)
+                            except Exception:
+                                pass
+                            continue
+                        if "ticker" in channel:
+                            try:
+                                self._ticker_handler.process(recv)
+                            except Exception:
+                                pass
+                            continue
+                        if "trades" in channel:
+                            try:
+                                HyperliquidTradesHandler(self.ss).process(recv)
+                            except Exception:
+                                pass
+                            continue
+                        if "candle" in channel or "kline" in channel:
+                            try:
+                                HyperliquidKlineHandler(self.ss).process(recv)
+                            except Exception:
+                                pass
+                            continue
+                        # Fallback to topic map using exact channel
+                        handler = self.topic_handler_map.get(recv["channel"])
                     elif "type" in recv:
-                        handler_type = recv["type"]
-                        # Map handler type to topic
+                        handler_type = str(recv["type"]).lower()
+                        # One-time sample logs
+                        if not self._log_once_l2 and "l2book" in handler_type:
+                            try:
+                                print(f"{dt_now()}: DEBUG first l2Book msg: {orjson.dumps(recv)[:350].decode()}")
+                            except Exception:
+                                pass
+                            self._log_once_l2 = True
+                        if not self._log_once_ticker and "ticker" in handler_type:
+                            try:
+                                print(f"{dt_now()}: DEBUG first ticker msg: {orjson.dumps(recv)[:350].decode()}")
+                            except Exception:
+                                pass
+                            self._log_once_ticker = True
+
+                        # Explicit dual dispatch for l2Book: update full book and BBA
+                        if "l2book" in handler_type:
+                            try:
+                                self.ss.hyperliquid_book.process(recv)
+                            except Exception:
+                                pass
+                            try:
+                                self._bba_handler.process(recv)
+                            except Exception:
+                                pass
+                            continue
+                        # Direct dispatch for ticker
+                        if "ticker" in handler_type:
+                            try:
+                                self._ticker_handler.process(recv)
+                            except Exception:
+                                pass
+                            continue
+
+                        # Fallback: map by substring
                         for topic, h in self.topic_handler_map.items():
                             if handler_type in topic.lower():
                                 handler = h
                                 break
 
                     if handler:
-                        handler(recv)
+                        try:
+                            handler(recv)
+                        except Exception:
+                            pass
 
             except websockets.ConnectionClosed:
                 continue

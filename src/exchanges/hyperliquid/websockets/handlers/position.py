@@ -2,6 +2,8 @@ from typing import Dict, List, Union
 from src.strategy.inventory import Inventory
 from src.sharedstate import SharedState
 
+from src.utils.misc import datetime_now as dt_now
+
 
 class HyperliquidPositionHandler:
     """
@@ -74,6 +76,7 @@ class HyperliquidPositionHandler:
         # Persist signed size for strategy-level decisions
         try:
             self.ss.position_szi = szi
+            print(f"{dt_now()}: POSITION update | szi={szi}")
         except Exception:
             pass
 
@@ -100,4 +103,8 @@ class HyperliquidPositionHandler:
         side = "Buy" if szi > 0 else ("Sell" if szi < 0 else "")
         if side:
             self.inventory.position_delta(side, notional, leverage)
+            try:
+                print(f"{dt_now()}: POSITION computed | side={side} notional={notional:.6f} mid={mid:.6f} lev={leverage}")
+            except Exception:
+                pass
 

@@ -105,11 +105,17 @@ class MarketMaker:
         float
             The adjusted spread value.
         """
-        # Get mid price based on primary exchange
+        # Get mid price based on primary exchange, with robust fallback to mark
         if hasattr(self.ss, 'primary_exchange') and self.ss.primary_exchange == "HYPERLIQUID":
-            mid_price = self.ss.hyperliquid_mid
+            mid_price = float(self.ss.hyperliquid_mid)
+            mark_price = float(getattr(self.ss, "hyperliquid_mark_price", 0.0))
+            # If the BBA-based mid is missing or far from mark, anchor to mark
+            if (mid_price <= 0.0 and mark_price > 0.0) or (
+                mid_price > 0.0 and mark_price > 0.0 and abs(mid_price - mark_price) / max(mark_price, 1e-9) > 0.5
+            ):
+                mid_price = mark_price
         else:
-            mid_price = self.ss.bybit_mid
+            mid_price = float(self.ss.bybit_mid)
         
         if mid_price == 0:
             return self.ss.base_spread  # Fallback to base spread
@@ -141,8 +147,31 @@ class MarketMaker:
         # Get BBA based on primary exchange
         if hasattr(self.ss, 'primary_exchange') and self.ss.primary_exchange == "HYPERLIQUID":
             best_bid, best_ask = self.ss.hyperliquid_bba[:, 0]
+            mid = float(self.ss.hyperliquid_mid)
+            mark = float(getattr(self.ss, "hyperliquid_mark_price", 0.0))
         else:
             best_bid, best_ask = self.ss.bybit_bba[:, 0]
+            mid = float(self.ss.bybit_mid)
+            mark = 0.0
+
+        # Validate BBA; if invalid or clearly wrong (e.g., defaulting to 1.0), synthesize around mid/mark
+        def invalid_book(bb: float, ba: float) -> bool:
+            return (bb <= 0.0 or ba <= 0.0 or ba <= bb)
+
+        # If mid looks off but mark is good, prefer mark
+        if (mid <= 0.0 and mark > 0.0) or (mid > 0.0 and mark > 0.0 and abs(mid - mark) / max(mark, 1e-9) > 0.5):
+            mid = mark if mark > 0.0 else mid
+
+        if invalid_book(best_bid, best_ask):
+            # Synthesize a minimal 2-tick spread around mid so we don't quote at ~1.0
+            if mid > 0.0:
+                tick = self.tick_size if self.tick_size and self.tick_size > 0 else 1e-6
+                best_bid = max(mid - tick, tick)
+                best_ask = mid + tick
+            else:
+                # As a last resort, anchor asks/bids around a small value to avoid 1.0
+                best_bid = 0.1
+                best_ask = 0.1 + (self.tick_size if self.tick_size and self.tick_size > 0 else 1e-6)
 
         # Inventory is too short, dont quote asks
         if bid_skew >= 1:
@@ -340,11 +369,22 @@ class MarketMaker:
             mid = 0.0
 
         if mid and mid > 0:
+            # Prefer anchoring to mark if mid is invalid or far off
+            mark = 0.0
+            try:
+                if hasattr(self.ss, 'primary_exchange') and self.ss.primary_exchange == "HYPERLIQUID":
+                    mark = float(getattr(self.ss, "hyperliquid_mark_price", 0.0))
+            except Exception:
+                mark = 0.0
+            center = mid
+            if (mid <= 0.0 and mark > 0.0) or (mid > 0.0 and mark > 0.0 and abs(mid - mark) / max(mark, 1e-9) > 0.5):
+                center = mark if mark > 0.0 else mid
+
             max_dev = 0.2  # 20% band
-            lower = mid * (1 - max_dev)
-            upper = mid * (1 + max_dev)
-            bids = [b for b in bids if lower <= b[1] <= mid]
-            asks = [a for a in asks if mid <= a[1] <= upper]
+            lower = center * (1 - max_dev)
+            upper = center * (1 + max_dev)
+            bids = [b for b in bids if lower <= b[1] <= center]
+            asks = [a for a in asks if center <= a[1] <= upper]
 
         if debug:
             print("-----------------------------")

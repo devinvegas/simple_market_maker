@@ -19,13 +19,43 @@ class HyperliquidTickerHandler:
         recv : Dict
             A dictionary containing ticker data.
         """
-        if "data" in recv:
-            data = recv["data"]
-            # Hyperliquid may use different field names
-            if "markPrice" in data:
-                self.ss.hyperliquid_mark_price = float(data["markPrice"])
-            elif "mark" in data:
-                self.ss.hyperliquid_mark_price = float(data["mark"])
-            elif "markPrice" in recv:
-                self.ss.hyperliquid_mark_price = float(recv["markPrice"])
+        # Robust extraction of mark/reference price from multiple possible fields
+        def _to_float(v):
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+
+        candidates = []
+        data = recv.get("data", {})
+        top = recv
+
+        # Common fields seen across versions
+        keys = [
+            "markPx", "markPrice", "mark",
+            "midPx", "fairPx", "indexPx",
+            "lastPx", "last"
+        ]
+        for k in keys:
+            if k in data:
+                candidates.append(_to_float(data.get(k)))
+            if k in top:
+                candidates.append(_to_float(top.get(k)))
+
+        # Nested price object fallback (e.g., {"price": {"markPx": ...}} )
+        price_obj = data.get("price", {}) if isinstance(data.get("price", {}), dict) else {}
+        for k in keys:
+            if k in price_obj:
+                candidates.append(_to_float(price_obj.get(k)))
+
+        # Choose first positive candidate
+        for v in candidates:
+            if v and v > 0:
+                self.ss.hyperliquid_mark_price = v
+                try:
+                    from src.utils.misc import datetime_now as dt_now
+                    print(f"{dt_now()}: TICKER mark update | mark={v}")
+                except Exception:
+                    pass
+                break
 
