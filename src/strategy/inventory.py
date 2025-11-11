@@ -49,6 +49,11 @@ class Inventory:
             # Calculate the maximum account value adjusted for leverage and a scaling factor.
             acc_max = (self.ss.account_size * leverage) / 2.05
 
+            # Prevent division by zero
+            if acc_max == 0:
+                self.ss.inventory_delta = 0.0
+                return
+
             # Adjust the value based on the side of the position.
             value = value if side == 'Buy' else -value
 

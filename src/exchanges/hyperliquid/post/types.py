@@ -2,7 +2,7 @@ from typing import Dict, List
 
 # Try to use Hyperliquid SDK for signing if available
 try:
-    from hyperliquid.utils.signing import sign_l1_action, sign_l2_action, sign_cancel_action
+    from hyperliquid.utils.signing import sign_l1_action
     HYPERLIQUID_SDK_AVAILABLE = True
 except ImportError:
     HYPERLIQUID_SDK_AVAILABLE = False
@@ -31,7 +31,7 @@ class HyperliquidFormats:
         Formats a payload for canceling all orders for the symbol.
     """
 
-    def __init__(self, symbol: str, wallet_address: str = None, private_key: str = None) -> None:
+    def __init__(self, symbol: str, wallet_address: str = None, private_key: str = None, asset_id: int = None) -> None:
         """
         Initializes the HyperliquidFormats class with the trading symbol.
 
@@ -43,15 +43,17 @@ class HyperliquidFormats:
             Wallet address for signing (if using SDK).
         private_key : str, optional
             Private key for signing (if using SDK).
+        asset_id : int, optional
+            The asset ID (index in universe) for this symbol.
         """
         self.symbol = symbol
         self.wallet_address = wallet_address
         self.private_key = private_key
+        self.asset_id = asset_id
 
-    def _convert_side(self, side: str) -> str:
-        """Convert 'Buy'/'Sell' to Hyperliquid format ('B'/'A' or 'A'/'B')"""
-        # Hyperliquid uses 'A' for ask (sell) and 'B' for bid (buy)
-        return "B" if side == "Buy" else "A"
+    def _is_buy(self, side: str) -> bool:
+        """Convert 'Buy'/'Sell' to boolean isBuy as required by wire format"""
+        return True if side == "Buy" else False
 
     def create_limit(self, side: str, price: str, qty: str, reduce_only: bool = False) -> Dict:
         """
@@ -73,35 +75,29 @@ class HyperliquidFormats:
         Dict
             A dictionary formatted for a limit order request.
         """
+        # Build order wire per SDK: a=assetId, b=isBuy(bool), p=price(str), s=size(str)
+        try:
+            # Prefer SDK's float_to_wire for safe normalization if available
+            from hyperliquid.utils.signing import float_to_wire  # type: ignore
+            p_str = float_to_wire(float(price))
+            s_str = float_to_wire(float(qty))
+        except Exception:
+            # Fallback to plain string format
+            p_str = f"{float(price):.8f}".rstrip('0').rstrip('.') if '.' in f"{float(price):.8f}" else f"{float(price):.8f}"
+            s_str = f"{float(qty):.8f}".rstrip('0').rstrip('.') if '.' in f"{float(qty):.8f}" else f"{float(qty):.8f}"
+
         action = {
             "type": "order",
             "orders": [{
-                "a": int(float(qty) * 1e6),  # Hyperliquid uses integer sizes (in base units * 1e6)
-                "b": int(float(price) * 1e6),  # Prices also in integer format
-                "s": self._convert_side(side),
+                "a": int(self.asset_id) if self.asset_id is not None else 0,
+                "b": self._is_buy(side),
+                "p": p_str,
+                "s": s_str,
                 "r": reduce_only,
                 "t": {"limit": {"tif": "Gtc"}}  # Good till cancel
             }],
             "grouping": "na"
         }
-        
-        # If SDK is available, sign the action
-        if HYPERLIQUID_SDK_AVAILABLE and self.wallet_address and self.private_key:
-            try:
-                from hyperliquid.utils.signing import sign_l1_action
-                signed = sign_l1_action(
-                    self.wallet_address,
-                    self.private_key,
-                    action,
-                    None,  # nonce - SDK will generate
-                    None   # vault_address - optional
-                )
-                return {
-                    "action": signed
-                }
-            except Exception:
-                pass
-        
         return {
             "action": action
         }
@@ -124,34 +120,25 @@ class HyperliquidFormats:
         Dict
             A dictionary formatted for a market order request.
         """
+        # For market, SDK uses aggressive IOC limit; keep "market" type if supported; fallback to IOC
+        try:
+            from hyperliquid.utils.signing import float_to_wire  # type: ignore
+            s_str = float_to_wire(float(qty))
+        except Exception:
+            s_str = f"{float(qty):.8f}".rstrip('0').rstrip('.') if '.' in f"{float(qty):.8f}" else f"{float(qty):.8f}"
+
         action = {
             "type": "order",
             "orders": [{
-                "a": int(float(qty) * 1e6),
-                "b": 0,  # Market order - no price
-                "s": self._convert_side(side),
+                "a": int(self.asset_id) if self.asset_id is not None else 0,
+                "b": self._is_buy(side),
+                # Without slippage logic here, use IOC limit semantics with no price -> leave 'p' out
+                "s": s_str,
                 "r": reduce_only,
-                "t": {"market": {}}
+                "t": {"limit": {"tif": "Ioc"}}
             }],
             "grouping": "na"
         }
-        
-        if HYPERLIQUID_SDK_AVAILABLE and self.wallet_address and self.private_key:
-            try:
-                from hyperliquid.utils.signing import sign_l1_action
-                signed = sign_l1_action(
-                    self.wallet_address,
-                    self.private_key,
-                    action,
-                    None,
-                    None
-                )
-                return {
-                    "action": signed
-                }
-            except Exception:
-                pass
-        
         return {
             "action": action
         }
@@ -202,28 +189,14 @@ class HyperliquidFormats:
         Dict
             A dictionary formatted for a cancel order request.
         """
+        # Wire format uses asset ID (int) not coin name (str)
         action = {
             "type": "cancel",
             "cancels": [{
-                "a": self.symbol,
+                "a": self.asset_id if self.asset_id is not None else 0,
                 "o": int(orderId)
             }]
         }
-        
-        if HYPERLIQUID_SDK_AVAILABLE and self.wallet_address and self.private_key:
-            try:
-                from hyperliquid.utils.signing import sign_cancel_action
-                signed = sign_cancel_action(
-                    self.wallet_address,
-                    self.private_key,
-                    action,
-                    None
-                )
-                return {
-                    "action": signed
-                }
-            except Exception:
-                pass
         
         return {
             "action": action
@@ -238,27 +211,14 @@ class HyperliquidFormats:
         Dict
             A dictionary formatted for a cancel all orders request.
         """
+        # Cancel all orders for this asset - wire format uses asset ID
+        # Omitting 'o' (order ID) cancels all orders for this asset
         action = {
             "type": "cancel",
             "cancels": [{
-                "a": self.symbol
+                "a": self.asset_id if self.asset_id is not None else 0
             }]
         }
-        
-        if HYPERLIQUID_SDK_AVAILABLE and self.wallet_address and self.private_key:
-            try:
-                from hyperliquid.utils.signing import sign_cancel_action
-                signed = sign_cancel_action(
-                    self.wallet_address,
-                    self.private_key,
-                    action,
-                    None
-                )
-                return {
-                    "action": signed
-                }
-            except Exception:
-                pass
         
         return {
             "action": action

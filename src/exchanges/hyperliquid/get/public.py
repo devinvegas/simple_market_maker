@@ -1,5 +1,6 @@
 import aiohttp
 import orjson
+import time
 from typing import Dict, Union, List
 from src.exchanges.hyperliquid.endpoints import BaseEndpoints, ApiEndpoints
 from src.sharedstate import SharedState
@@ -44,7 +45,8 @@ class HyperliquidPublicClient:
         """
         self.ss = ss
         self.base_url = BaseEndpoints.MAINNET
-        self.symbol = getattr(ss, 'hyperliquid_symbol', None) or getattr(ss, 'bybit_symbol', None)
+        raw = getattr(ss, 'hyperliquid_symbol', None) or getattr(ss, 'bybit_symbol', None)
+        self.coin = getattr(ss, 'hyperliquid_coin_key', None) or raw
 
     async def _request(self, method: str, endpoint: str, data: Dict = None) -> Dict:
         """
@@ -68,10 +70,23 @@ class HyperliquidPublicClient:
         async with aiohttp.ClientSession() as session:
             if method == "POST":
                 async with session.post(url, json=data) as response:
-                    return orjson.loads(await response.text())
+                    # Check status code
+                    if response.status != 200:
+                        text = await response.text()
+                        raise Exception(f"HTTP {response.status}: {text}")
+                    text = await response.text()
+                    if not text:
+                        raise Exception("Empty response from API")
+                    return orjson.loads(text)
             else:
                 async with session.get(url) as response:
-                    return orjson.loads(await response.text())
+                    if response.status != 200:
+                        text = await response.text()
+                        raise Exception(f"HTTP {response.status}: {text}")
+                    text = await response.text()
+                    if not text:
+                        raise Exception("Empty response from API")
+                    return orjson.loads(text)
 
     async def klines(self, interval: int, limit: int) -> Dict:
         """
@@ -89,12 +104,21 @@ class HyperliquidPublicClient:
         Dict
             A dictionary containing the candlestick data.
         """
+        # Convert milliseconds to minutes for interval string
+        interval_minutes = interval // 60000
+        interval_str = f"{interval_minutes}m"
+        
+        # Calculate startTime and endTime (endTime = now, startTime = now - limit * interval)
+        end_time = int(time.time() * 1000)  # Current time in milliseconds
+        start_time = end_time - (limit * interval)  # Go back by limit * interval
+        
         payload = {
             "type": "candleSnapshot",
             "req": {
-                "coin": self.symbol,
-                "interval": f"{interval}ms",
-                "n": limit
+                "coin": self.coin,
+                "interval": interval_str,  # e.g., "1m", "5m"
+                "startTime": start_time,
+                "endTime": end_time
             }
         }
         return await self._request("POST", ApiEndpoints.INFO, payload)
@@ -115,10 +139,8 @@ class HyperliquidPublicClient:
         """
         payload = {
             "type": "recentTrades",
-            "req": {
-                "coin": self.symbol,
-                "n": limit
-            }
+            "coin": self.coin,
+            "n": limit
         }
         return await self._request("POST", ApiEndpoints.INFO, payload)
 
@@ -152,7 +174,7 @@ class HyperliquidPublicClient:
         """
         payload = {
             "type": "l2Book",
-            "coin": self.symbol
+            "coin": self.coin
         }
         return await self._request("POST", ApiEndpoints.INFO, payload)
 

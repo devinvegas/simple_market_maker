@@ -8,8 +8,9 @@ from src.sharedstate import SharedState
 
 # Try to use Hyperliquid SDK for signing if available, otherwise use custom implementation
 try:
-    from hyperliquid.utils.signing import sign_l1_action, sign_l2_action, sign_cancel_action
-    from hyperliquid.utils.constants import MAINNET_API_URL, TESTNET_API_URL
+    from hyperliquid.utils.signing import sign_l1_action, get_timestamp_ms
+    from hyperliquid.utils.constants import MAINNET_API_URL
+    from eth_account import Account
     HYPERLIQUID_SDK_AVAILABLE = True
 except ImportError:
     HYPERLIQUID_SDK_AVAILABLE = False
@@ -84,6 +85,9 @@ class HyperliquidPrivatePostClient:
         max_retries = self.max_retries
         
         # Sign the payload if SDK is available
+        if endpoint == ApiEndpoints.EXCHANGE and not HYPERLIQUID_SDK_AVAILABLE:
+            raise Exception("hyperliquid-python-sdk is required for /exchange actions (signing).")
+
         if HYPERLIQUID_SDK_AVAILABLE and endpoint == ApiEndpoints.EXCHANGE:
             # Use SDK for signing exchange actions
             try:
@@ -97,7 +101,32 @@ class HyperliquidPrivatePostClient:
         for attempt in range(max_retries):
             try:
                 async with session.post(full_endpoint, json=signed_payload) as req:
-                    response = orjson.loads(await req.text())
+                    # Debug: show payload when hitting /exchange (without leaking full signature)
+                    if endpoint == ApiEndpoints.EXCHANGE:
+                        try:
+                            dbg = dict(signed_payload)
+                            sig = dbg.get("signature", {})
+                            if isinstance(sig, dict):
+                                dbg["signature"] = {k: (v[:10] + "..." if isinstance(v, str) else v) for k, v in sig.items()}
+                            print(f"{dt_now()}: DEBUG exchange payload: {orjson.dumps(dbg)[:512].decode()}")
+                        except Exception:
+                            pass
+
+                    # Check status code first
+                    if req.status != 200:
+                        text = await req.text()
+                        print(f"{dt_now()}: HTTP {req.status}: {text} | Endpoint: {endpoint}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(attempt + 1)
+                            continue
+                        return {"status": "error", "message": text}
+                    
+                    text = await req.text()
+                    if not text:
+                        print(f"{dt_now()}: Empty response | Endpoint: {endpoint}")
+                        return {}
+                    
+                    response = orjson.loads(text)
                     
                     # Check for success
                     if isinstance(response, dict):
@@ -112,6 +141,12 @@ class HyperliquidPrivatePostClient:
                     else:
                         return response
                         
+            except orjson.JSONDecodeError as json_err:
+                print(f"{dt_now()}: JSON decode error: {json_err} | Response: {text[:200] if text else 'empty'}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(attempt + 1)
+                else:
+                    return {}
             except Exception as e:
                 if attempt < max_retries - 1:
                     await asyncio.sleep(attempt + 1)  # Incremental back-off
@@ -136,9 +171,37 @@ class HyperliquidPrivatePostClient:
         """
         if not HYPERLIQUID_SDK_AVAILABLE:
             return payload
-        
-        # This is a placeholder - actual signing depends on the action type
-        # The SDK provides different signing functions for different actions
-        # We'll handle this in the order.py file where we know the action type
-        return payload
+
+        # Expect either {"action": {...}} or a raw action dict
+        action = payload.get("action", payload)
+
+        # Build wallet from private key
+        private_key = getattr(self, "private_key", None)
+        if not private_key:
+            raise Exception("Hyperliquid private key missing for signing.")
+        if not str(private_key).startswith("0x"):
+            private_key = "0x" + str(private_key)
+        wallet = Account.from_key(private_key)
+
+        # Prepare signing inputs
+        nonce = get_timestamp_ms()
+        is_mainnet = (self.base_url == MAINNET_API_URL)
+
+        signature = sign_l1_action(
+            wallet,
+            action,
+            None,   # active pool / vault address (None for user wallet)
+            nonce,
+            None,   # expiresAfter
+            is_mainnet
+        )
+
+        # Construct full /exchange payload as per SDK
+        return {
+            "action": action,
+            "nonce": nonce,
+            "signature": signature,
+            "vaultAddress": None,
+            "expiresAfter": None,
+        }
 

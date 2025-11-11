@@ -1,7 +1,14 @@
 import asyncio
-import uvloop
+import sys
 from dotenv import load_dotenv
 load_dotenv()
+
+# Try to import uvloop (not available on Windows)
+try:
+    import uvloop
+    UVLOOP_AVAILABLE = True
+except ImportError:
+    UVLOOP_AVAILABLE = False
 
 from src.strategy.core import Strategy
 from src.sharedstate import SharedState
@@ -24,5 +31,7 @@ async def main():
         raise e
 
 if __name__ == "__main__":
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    # Only use uvloop on non-Windows systems
+    if UVLOOP_AVAILABLE and sys.platform != "win32":
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     asyncio.run(main())

@@ -76,12 +76,15 @@ class SharedState:
         self.hyperliquid_mark_price = 0
         self.hyperliquid_tick_size = 0
         self.hyperliquid_lot_size = 0
+        self.hyperliquid_asset_id = None  # Asset ID for the symbol in universe
+        self.hyperliquid_coin_key = None   # SDK coin key/name used in API "coin" fields
 
         # Other shared attributes
         self.current_orders = {}
         self.execution_feed = deque(maxlen=100)
         self.volatility_value = 0
         self.inventory_delta = 0
+        self.position_szi = 0.0  # signed size in base units for current symbol
 
 
     def _load_settings_(self, settings: Dict, reload: bool=False) -> None:
@@ -105,6 +108,10 @@ class SharedState:
         self.min_order_size = float(settings["min_order_size"])
         self.max_order_size = float(settings["max_order_size"])
         self.inventory_extreme = float(settings["inventory_extreme"])
+        # Optional: minimum USD notional per order (dynamic guard)
+        self.min_order_notional_usd = float(settings.get("min_order_notional_usd", 3.0))
+        # Optional: cap number of resting quotes per side
+        self.max_quotes_per_side = int(settings.get("max_quotes_per_side", 2))
 
     def _load_initial_settings_(self) -> None:
         """
@@ -201,7 +208,10 @@ class SharedState:
         float
             The calculated weighted mid-price, factoring in the bid-ask imbalance.
         """
-        imb = bba[0][1] / (bba[0][1] + bba[1][1])
+        total_qty = bba[0][1] + bba[1][1]
+        if total_qty == 0:
+            return (bba[0][0] + bba[1][0]) / 2  # Fallback to simple mid
+        imb = bba[0][1] / total_qty
         return bba[1][0] * imb + bba[0][0] * (1 - imb)
 
     @staticmethod
@@ -229,6 +239,13 @@ class SharedState:
         """
         bids_qty_sum = sum(bid[1] for bid in book.bids[:depth])
         asks_qty_sum = sum(ask[1] for ask in book.asks[:depth])
+        
+        if bids_qty_sum == 0 or asks_qty_sum == 0:
+            # Fallback to simple mid if no volume
+            if len(book.bids) > 0 and len(book.asks) > 0:
+                return (book.bids[0][0] + book.asks[0][0]) / 2
+            return 0.0
+        
         bid_fair = sum(bid[0] * (bid[1] / bids_qty_sum) for bid in book.bids[:depth])
         ask_fair = sum(ask[0] * (ask[1] / asks_qty_sum) for ask in book.asks[:depth])
 

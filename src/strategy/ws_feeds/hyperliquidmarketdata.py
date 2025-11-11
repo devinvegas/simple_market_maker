@@ -61,13 +61,103 @@ class HyperliquidMarketData:
         """
         Fetches and assigns the symbol's tick & lot size to the shared market data before streaming.
         """
-        info = await HyperliquidPublicClient(self.ss).instrument_info()
-        if "data" in info:
-            meta = info["data"]
-            # Extract tick and lot size from metadata
-            # Format may need adjustment based on actual Hyperliquid API
-            self.ss.hyperliquid_tick_size = float(meta.get("tickSize", meta.get("szDecimals", 0.01)))
-            self.ss.hyperliquid_lot_size = float(meta.get("lotSize", meta.get("szDecimals", 0.01)))
+        try:
+            meta_resp = await HyperliquidPublicClient(self.ss).instrument_info()
+
+            # Normalize meta structure
+            meta = meta_resp.get("data", meta_resp)
+
+            # Prefer SDK mapping for asset ids and decimals to match server expectations
+            try:
+                from hyperliquid.info import Info  # type: ignore
+                from src.exchanges.hyperliquid.endpoints import BaseEndpoints
+                info_sdk = Info(BaseEndpoints.MAINNET, True, meta, None, None, None)
+
+                symbol = getattr(self.ss, 'hyperliquid_symbol', '').upper()
+                asset_id = None
+
+                # name_to_asset may be a method or mapping depending on SDK version
+                try:
+                    asset_id = info_sdk.name_to_asset(symbol)  # callable style
+                except Exception:
+                    try:
+                        asset_id = info_sdk.name_to_asset[symbol]  # mapping style
+                    except Exception:
+                        asset_id = None
+
+                if isinstance(asset_id, int):
+                    self.ss.hyperliquid_asset_id = asset_id
+                    # Store SDK coin key for consistent REST/WS usage
+                    try:
+                        coin_key = None
+                        try:
+                            coin_key = info_sdk.name_to_coin[symbol]  # mapping style
+                        except Exception:
+                            coin_key = info_sdk.name_to_coin(symbol)  # callable style
+                        if coin_key:
+                            self.ss.hyperliquid_coin_key = coin_key
+                    except Exception:
+                        pass
+                    # szDecimals lookup
+                    try:
+                        sz_decimals = int(info_sdk.asset_to_sz_decimals[asset_id])
+                        self.ss.hyperliquid_lot_size = 10 ** (-sz_decimals)
+                    except Exception:
+                        self.ss.hyperliquid_lot_size = 1.0
+
+                    # Price tick size: try to infer from meta (pxDecimals) if present; fallback conservative
+                    try:
+                        px_decimals = None
+                        # meta may be dict with "universe" list aligned with asset ids (with offset handled by SDK)
+                        if isinstance(meta, dict) and "universe" in meta:
+                            # SDK may offset indices; try to find matching by name
+                            for a in meta["universe"]:
+                                if a.get("name", "").upper() == symbol:
+                                    px_decimals = int(a.get("pxDecimals", a.get("pxDecimal", 4)))
+                                    break
+                        if px_decimals is not None:
+                            self.ss.hyperliquid_tick_size = 10 ** (-px_decimals)
+                    except Exception:
+                        pass
+                    if not getattr(self.ss, 'hyperliquid_tick_size', 0):
+                        self.ss.hyperliquid_tick_size = 0.0001
+
+                    print(f"{symbol}: asset_id={asset_id}, tick_size={self.ss.hyperliquid_tick_size}, lot_size={self.ss.hyperliquid_lot_size}")
+                    return
+            except Exception:
+                pass
+
+            # Fallback: derive from universe inline
+            if isinstance(meta, dict) and "universe" in meta:
+                for idx, asset in enumerate(meta["universe"]):
+                    if asset.get("name", "").upper() == getattr(self.ss, 'hyperliquid_symbol', '').upper():
+                        self.ss.hyperliquid_asset_id = idx
+                        sz_decimals = int(asset.get("szDecimals", 2))
+                        self.ss.hyperliquid_lot_size = 10 ** (-sz_decimals)
+                        # Price tick from pxDecimals if present
+                        try:
+                            px_decimals = int(asset.get("pxDecimals", asset.get("pxDecimal", 4)))
+                            self.ss.hyperliquid_tick_size = 10 ** (-px_decimals)
+                        except Exception:
+                            if not getattr(self.ss, 'hyperliquid_tick_size', 0):
+                                self.ss.hyperliquid_tick_size = 0.0001
+                        print(f"{self.ss.hyperliquid_symbol}: asset_id={idx}, tick_size={self.ss.hyperliquid_tick_size}, lot_size={self.ss.hyperliquid_lot_size}")
+                        return
+
+            # Fallback to defaults
+            print("Warning: Could not map asset id; using defaults")
+            if not getattr(self.ss, 'hyperliquid_tick_size', 0):
+                self.ss.hyperliquid_tick_size = 0.0001
+            if not getattr(self.ss, 'hyperliquid_lot_size', 0):
+                self.ss.hyperliquid_lot_size = 1.0
+
+        except Exception as e:
+            print(f"Error fetching precision: {e}")
+            # Set defaults to allow system to run
+            if not getattr(self.ss, 'hyperliquid_tick_size', 0):
+                self.ss.hyperliquid_tick_size = 0.0001
+            if not getattr(self.ss, 'hyperliquid_lot_size', 0):
+                self.ss.hyperliquid_lot_size = 1.0
 
     async def _stream_(self) -> Union[Coroutine, None]:
         """

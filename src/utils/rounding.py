@@ -4,8 +4,15 @@ def round_step(num: float, step: float) -> float:
     """
     Rounds a float to a given step size
     """
-    num = Decimal(str(num))
-    return float(num - num % Decimal(str(step)))
+    if step == 0 or step is None:
+        return num  # No rounding if step is 0 or None
+    
+    try:
+        num = Decimal(str(num))
+        step_decimal = Decimal(str(step))
+        return float(num - num % step_decimal)
+    except Exception:
+        return num  # Return original number if conversion fails
 
 
 ### FIX FOR STEP > 1 ###

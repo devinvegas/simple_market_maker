@@ -58,4 +58,7 @@ def trades_imbalance(trades: NDArray, window: int) -> float:
         else:
             delta_sells += weighted_qty
 
-    return (delta_buys - delta_sells) / (delta_buys + delta_sells)
+    total = delta_buys + delta_sells
+    if total == 0:
+        return 0.0
+    return (delta_buys - delta_sells) / total

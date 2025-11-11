@@ -29,7 +29,10 @@ class HyperliquidPublicWs:
             The shared state instance for managing application data.
         """
         self.ss = ss
-        self.symbol = (getattr(ss, 'hyperliquid_symbol', None) or getattr(ss, 'bybit_symbol', None) or "").upper()
+        # Use SDK coin key if available, fallback to raw symbol
+        raw = (getattr(ss, 'hyperliquid_symbol', None) or getattr(ss, 'bybit_symbol', None) or "").upper()
+        coin_key = getattr(ss, 'hyperliquid_coin_key', None) or raw
+        self.symbol = coin_key
 
     def multi_stream_request(self, topics: list, **kwargs) -> tuple:
         """

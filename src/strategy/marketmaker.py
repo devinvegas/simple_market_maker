@@ -39,11 +39,15 @@ class MarketMaker:
         Generates a list of quotes to be submitted to the exchange.
     """
 
-    max_orders = 8
+    max_orders = 8  # total across both sides (kept for backward compat)
 
     def __init__(self, ss: SharedState) -> None:
         self.ss = ss
         self.features = Features(self.ss)
+        # Cap quotes per side (default 2)
+        self.quotes_per_side = int(getattr(self.ss, "max_quotes_per_side", 2))
+        # Keep max_orders consistent with per-side cap
+        self.max_orders = max(2 * self.quotes_per_side, 2)
         # Support both Bybit and Hyperliquid
         if hasattr(ss, 'primary_exchange') and ss.primary_exchange == "HYPERLIQUID":
             self.tick_size = self.ss.hyperliquid_tick_size
@@ -106,6 +110,10 @@ class MarketMaker:
             mid_price = self.ss.hyperliquid_mid
         else:
             mid_price = self.ss.bybit_mid
+        
+        if mid_price == 0:
+            return self.ss.base_spread  # Fallback to base spread
+        
         multiplier = (self.ss.volatility_value * 100) / mid_price
         return self.ss.base_spread * nbclip(multiplier, 1, 10)
 
@@ -161,8 +169,16 @@ class MarketMaker:
         bid_lower = best_bid - (base_range * (1 - bid_skew))
         ask_upper = best_ask + (base_range * (1 - ask_skew))
             
-        bid_prices = nbgeomspace(best_bid, bid_lower, self.max_orders/2) + self.ss.price_offset
-        ask_prices = nbgeomspace(best_ask, ask_upper, self.max_orders/2) + self.ss.price_offset
+        bid_prices = nbgeomspace(best_bid, bid_lower, self.quotes_per_side) + self.ss.price_offset
+        ask_prices = nbgeomspace(best_ask, ask_upper, self.quotes_per_side) + self.ss.price_offset
+
+        # Ensure prices are positive and respect tick size
+        if self.tick_size and self.tick_size > 0:
+            bid_prices = np.maximum(bid_prices, self.tick_size)
+            ask_prices = np.maximum(ask_prices, self.tick_size)
+        else:
+            bid_prices = np.maximum(bid_prices, 1e-12)
+            ask_prices = np.maximum(ask_prices, 1e-12)
 
         return bid_prices, ask_prices
 
@@ -242,19 +258,93 @@ class MarketMaker:
         bid_prices, ask_prices = self._prices_(bid_skew, ask_skew)
         bid_sizes, ask_sizes = self._sizes_(bid_skew, ask_skew)
 
+        # Hard inventory safety: strongly bias away from the heavy side
+        inv = getattr(self.ss, "inventory_delta", 0.0)
+        inv_ext = getattr(self.ss, "inventory_extreme", 0.5)
+        # If long beyond half-threshold: suppress bids
+        if inv > (inv_ext * 0.6):
+            bid_prices, bid_sizes = None, None
+        # If short beyond half-threshold: suppress asks
+        if inv < -(inv_ext * 0.6):
+            ask_prices, ask_sizes = None, None
+
+        # If current position is long at all, prefer quoting asks only; if short, bids only
+        pos_szi = float(getattr(self.ss, "position_szi", 0.0) or 0.0)
+        if pos_szi > 0 and bid_prices is not None:
+            bid_prices, bid_sizes = None, None
+        elif pos_szi < 0 and ask_prices is not None:
+            ask_prices, ask_sizes = None, None
+
+        # Fallback: ensure we always quote both sides near mid when not suppressed
+        if (bid_prices is None or ask_prices is None) and (inv <= (inv_ext * 0.6) and inv >= -(inv_ext * 0.6)):
+            # symmetric fallback around current mid
+            if hasattr(self.ss, 'primary_exchange') and self.ss.primary_exchange == "HYPERLIQUID":
+                mid = float(self.ss.hyperliquid_mid)
+            else:
+                mid = float(self.ss.bybit_mid)
+            if mid > 0:
+                half = max(self.spread * 0.5, self.tick_size if self.tick_size else 0.0)
+                # generate compact symmetric ladders
+                n = self.quotes_per_side
+                if bid_prices is None:
+                    bid_prices = nblinspace(mid - half, mid - self.tick_size, n) if n > 0 else None
+                if ask_prices is None:
+                    ask_prices = nblinspace(mid + self.tick_size, mid + half, n) if n > 0 else None
+                if bid_sizes is None and isinstance(ask_sizes, np.ndarray):
+                    bid_sizes = ask_sizes.copy()
+                if ask_sizes is None and isinstance(bid_sizes, np.ndarray):
+                    ask_sizes = bid_sizes.copy()
+
         bids, asks = [], []
 
         if isinstance(bid_prices, np.ndarray):
-            bids = [
-                ["Buy", round_step(price, self.tick_size), round_step(size, self.lot_size)]
-                for price, size in zip(bid_prices, bid_sizes)
-            ]
+            bids = []
+            for price, size in zip(bid_prices, bid_sizes):
+                px = round_step(price, self.tick_size)
+                # Auto-guard: ensure USD notional >= min_order_notional_usd
+                if px > 0:
+                    min_qty_by_usd = self.ss.min_order_notional_usd / px
+                    # Round up to lot size
+                    lot = self.lot_size if self.lot_size > 0 else 1.0
+                    # Ceil to nearest lot step
+                    min_qty_steps = int(np.ceil(min_qty_by_usd / lot))
+                    min_qty = max(self.ss.min_order_size, min_qty_steps * lot)
+                else:
+                    min_qty = self.ss.min_order_size
+                qty = max(size, min_qty)
+                qty = round_step(qty, lot)
+                bids.append(["Buy", px, qty])
         
         if isinstance(ask_prices, np.ndarray):
-            asks = [
-                ["Sell", round_step(price, self.tick_size), round_step(size, self.lot_size)]
-                for price, size in zip(ask_prices, ask_sizes)
-            ]
+            asks = []
+            for price, size in zip(ask_prices, ask_sizes):
+                px = round_step(price, self.tick_size)
+                if px > 0:
+                    min_qty_by_usd = self.ss.min_order_notional_usd / px
+                    lot = self.lot_size if self.lot_size > 0 else 1.0
+                    min_qty_steps = int(np.ceil(min_qty_by_usd / lot))
+                    min_qty = max(self.ss.min_order_size, min_qty_steps * lot)
+                else:
+                    min_qty = self.ss.min_order_size
+                qty = max(size, min_qty)
+                qty = round_step(qty, lot)
+                asks.append(["Sell", px, qty])
+
+        # Clamp quotes to a reasonable band around mid to avoid exchange 422 on absurd prices
+        try:
+            if hasattr(self.ss, 'primary_exchange') and self.ss.primary_exchange == "HYPERLIQUID":
+                mid = float(self.ss.hyperliquid_mid)
+            else:
+                mid = float(self.ss.bybit_mid)
+        except Exception:
+            mid = 0.0
+
+        if mid and mid > 0:
+            max_dev = 0.2  # 20% band
+            lower = mid * (1 - max_dev)
+            upper = mid * (1 + max_dev)
+            bids = [b for b in bids if lower <= b[1] <= mid]
+            asks = [a for a in asks if mid <= a[1] <= upper]
 
         if debug:
             print("-----------------------------")

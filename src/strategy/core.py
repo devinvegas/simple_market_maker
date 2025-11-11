@@ -39,17 +39,21 @@ class DataFeeds:
             tasks.append(asyncio.create_task(HyperliquidMarketData(self.ss).start_feed()))
             tasks.append(asyncio.create_task(HyperliquidPrivateData(self.ss).start_feed()))
             
-            # Optional Binance feed (like Binance for Bybit)
+            # Optional data feeds
             if self.ss.primary_data_feed == "BINANCE":
                 tasks.append(asyncio.create_task(BinanceMarketData(self.ss).start_feed()))
+            elif self.ss.primary_data_feed == "BYBIT":
+                tasks.append(asyncio.create_task(BybitMarketData(self.ss).start_feed()))
         else:
             # Bybit as primary exchange (default)
             tasks.append(asyncio.create_task(BybitMarketData(self.ss).start_feed()))
             tasks.append(asyncio.create_task(BybitPrivateData(self.ss).start_feed()))
             
-            # Optional Binance feed
+            # Optional data feeds
             if self.ss.primary_data_feed == "BINANCE":
                 tasks.append(asyncio.create_task(BinanceMarketData(self.ss).start_feed()))
+            elif self.ss.primary_data_feed == "HYPERLIQUID":
+                tasks.append(asyncio.create_task(HyperliquidMarketData(self.ss).start_feed()))
 
         await asyncio.gather(*tasks)
 
@@ -82,15 +86,19 @@ class Strategy:
             if primary_exchange == "HYPERLIQUID":
                 if not self.ss.hyperliquid_ws_connected:
                     continue
-                # Optional Binance feed
+                # Optional data feeds
                 if self.ss.primary_data_feed == "BINANCE" and not self.ss.binance_ws_connected:
+                    continue
+                elif self.ss.primary_data_feed == "BYBIT" and not self.ss.bybit_ws_connected:
                     continue
             else:
                 # Bybit as primary
                 if not self.ss.bybit_ws_connected:
                     continue
-                # Optional Binance feed
+                # Optional data feeds
                 if self.ss.primary_data_feed == "BINANCE" and not self.ss.binance_ws_connected:
+                    continue
+                elif self.ss.primary_data_feed == "HYPERLIQUID" and not self.ss.hyperliquid_ws_connected:
                     continue
 
             break
@@ -105,6 +113,17 @@ class Strategy:
 
         while True:
             await asyncio.sleep(1)  # Strategy iteration delay
+            
+            # Check if tick_size and lot_size are set before generating quotes
+            primary_exchange = getattr(self.ss, 'primary_exchange', 'BYBIT').upper()
+            if primary_exchange == "HYPERLIQUID":
+                if self.ss.hyperliquid_tick_size == 0 or self.ss.hyperliquid_lot_size == 0:
+                    continue  # Wait until precision is fetched
+                # Minimal gating: rely on WS confirmation and precision only
+            else:
+                if self.ss.bybit_tick_size == 0 or self.ss.bybit_lot_size == 0:
+                    continue  # Wait until precision is fetched
+            
             new_orders, spread = MarketMaker(self.ss).generate_quotes(debug=False)
             await OMS(self.ss).run(new_orders, spread)
 

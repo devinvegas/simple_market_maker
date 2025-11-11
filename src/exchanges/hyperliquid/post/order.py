@@ -37,7 +37,9 @@ class Order:
         self.wallet_address = getattr(ss, 'hyperliquid_wallet_address', None) or ss.api_key
         self.private_key = getattr(ss, 'hyperliquid_private_key', None) or ss.api_secret
         symbol = getattr(ss, 'hyperliquid_symbol', None) or getattr(ss, 'bybit_symbol', None)
-        self.formats = HyperliquidFormats(symbol, self.wallet_address, self.private_key)
+        # Get asset_id from SharedState if available
+        asset_id = getattr(ss, 'hyperliquid_asset_id', None)
+        self.formats = HyperliquidFormats(symbol, self.wallet_address, self.private_key, asset_id)
         self.endpoints = ApiEndpoints
         self.client = HyperliquidPrivatePostClient(self.ss)
         self.session = aiohttp.ClientSession()
@@ -111,7 +113,37 @@ class Order:
         """
         endpoint = self.endpoints.EXCHANGE
         side, qty = self._order_to_str_(order)
-        payload = self.formats.create_market(side, qty)
+        # Build aggressive IOC limit like SDK.market_open
+        mid = getattr(self.ss, 'hyperliquid_mid', 0.0)
+        if mid <= 0:
+            return None
+        # Default slippage 5%
+        slippage = 0.05
+        px = mid * (1 + slippage) if side == "Buy" else mid * (1 - slippage)
+
+        # Build wire
+        asset_id = getattr(self.ss, 'hyperliquid_asset_id', None) or 0
+        try:
+            from hyperliquid.utils.signing import float_to_wire  # type: ignore
+            p_str = float_to_wire(float(px))
+            s_str = float_to_wire(float(qty))
+        except Exception:
+            p_str = f"{float(px):.8f}".rstrip('0').rstrip('.') if '.' in f"{float(px):.8f}" else f"{float(px):.8f}"
+            s_str = f"{float(qty):.8f}".rstrip('0').rstrip('.') if '.' in f"{float(qty):.8f}" else f"{float(qty):.8f}"
+
+        action = {
+            "type": "order",
+            "orders": [{
+                "a": int(asset_id),
+                "b": True if side == "Buy" else False,
+                "p": p_str,
+                "s": s_str,
+                "r": False,
+                "t": {"limit": {"tif": "Ioc"}}
+            }],
+            "grouping": "na"
+        }
+        payload = {"action": action}
         return await self._submit_(endpoint, payload)
 
     async def order_limit(self, order: Tuple[str, float, float]) -> Union[Dict, None]:
@@ -151,12 +183,23 @@ class Order:
         
         # Hyperliquid supports batch orders in a single action
         batch_orders = []
+        asset_id = getattr(self.ss, 'hyperliquid_asset_id', None) or 0
         for order in orders:
             side, price, qty = self._order_to_str_(order)
+            # Build per SDK wire
+            try:
+                from hyperliquid.utils.signing import float_to_wire  # type: ignore
+                p_str = float_to_wire(float(price))
+                s_str = float_to_wire(float(qty))
+            except Exception:
+                p_str = f"{float(price):.8f}".rstrip('0').rstrip('.') if '.' in f"{float(price):.8f}" else f"{float(price):.8f}"
+                s_str = f"{float(qty):.8f}".rstrip('0').rstrip('.') if '.' in f"{float(qty):.8f}" else f"{float(qty):.8f}"
+
             batch_orders.append({
-                "a": int(float(qty) * 1e6),
-                "b": int(float(price) * 1e6),
-                "s": self.formats._convert_side(side),
+                "a": int(asset_id),
+                "b": True if side == "Buy" else False,
+                "p": p_str,
+                "s": s_str,
                 "r": False,
                 "t": {"limit": {"tif": "Gtc"}}
             })
@@ -167,19 +210,7 @@ class Order:
             "grouping": "na"
         }
         
-        # Sign if SDK available
-        try:
-            from hyperliquid.utils.signing import sign_l1_action
-            signed = sign_l1_action(
-                self.wallet_address,
-                self.private_key,
-                action,
-                None,
-                None
-            )
-            payload = {"action": signed}
-        except Exception:
-            payload = {"action": action}
+        payload = {"action": action}
         
         result = await self._sessionless_submit_(endpoint, payload)
         await self.close_session()
@@ -222,12 +253,22 @@ class Order:
         endpoint = self.endpoints.EXCHANGE
         # Similar to batch place, but with order IDs
         batch_orders = []
+        asset_id = getattr(self.ss, 'hyperliquid_asset_id', None) or 0
         for order in orders:
             order_id, price, qty = self._order_to_str_(order)
+            try:
+                from hyperliquid.utils.signing import float_to_wire  # type: ignore
+                p_str = float_to_wire(float(price))
+                s_str = float_to_wire(float(qty))
+            except Exception:
+                p_str = f"{float(price):.8f}".rstrip('0').rstrip('.') if '.' in f"{float(price):.8f}" else f"{float(price):.8f}"
+                s_str = f"{float(qty):.8f}".rstrip('0').rstrip('.') if '.' in f"{float(qty):.8f}" else f"{float(qty):.8f}"
+
             batch_orders.append({
                 "oid": int(order_id),
-                "a": int(float(qty) * 1e6),
-                "b": int(float(price) * 1e6),
+                "a": int(asset_id),
+                "p": p_str,
+                "s": s_str,
             })
         
         action = {
@@ -236,18 +277,7 @@ class Order:
             "grouping": "na"
         }
         
-        try:
-            from hyperliquid.utils.signing import sign_l1_action
-            signed = sign_l1_action(
-                self.wallet_address,
-                self.private_key,
-                action,
-                None,
-                None
-            )
-            payload = {"action": signed}
-        except Exception:
-            payload = {"action": action}
+        payload = {"action": action}
         
         result = await self._sessionless_submit_(endpoint, payload)
         await self.close_session()
@@ -286,25 +316,15 @@ class Order:
             The response from Hyperliquid's API if the orders are successfully canceled; otherwise, None.
         """
         endpoint = self.endpoints.EXCHANGE
-        symbol = getattr(self.ss, 'hyperliquid_symbol', None) or getattr(self.ss, 'bybit_symbol', None)
+        asset_id = getattr(self.ss, 'hyperliquid_asset_id', None) or 0
         
-        cancels = [{"a": symbol, "o": int(oid)} for oid in order_ids]
+        cancels = [{"a": int(asset_id), "o": int(oid)} for oid in order_ids]
         action = {
             "type": "cancel",
             "cancels": cancels
         }
         
-        try:
-            from hyperliquid.utils.signing import sign_cancel_action
-            signed = sign_cancel_action(
-                self.wallet_address,
-                self.private_key,
-                action,
-                None
-            )
-            payload = {"action": signed}
-        except Exception:
-            payload = {"action": action}
+        payload = {"action": action}
         
         result = await self._sessionless_submit_(endpoint, payload)
         await self.close_session()
@@ -319,9 +339,31 @@ class Order:
         Union[Dict, None]
             The response from Hyperliquid's API if all orders are successfully canceled; otherwise, None.
         """
-        endpoint = self.endpoints.EXCHANGE
-        payload = self.formats.create_cancel_all()
-        return await self._submit_(endpoint, payload)
+        # Fetch open orders and cancel each by oid
+        from src.exchanges.hyperliquid.get.private import HyperliquidPrivateGet
+        getter = HyperliquidPrivateGet(self.ss)
+        resp = await getter.open_orders()
+        await getter._close_()
+
+        if not resp or "data" not in resp:
+            return {"status": "ok"}  # nothing to cancel
+
+        # Extract oids for our asset/symbol
+        asset_id = getattr(self.ss, 'hyperliquid_asset_id', None)
+        oids: List[int] = []
+        try:
+            for item in resp["data"]:
+                # Expect each item to include 'oid' and 'coin' or asset reference
+                if "oid" in item:
+                    if asset_id is None or item.get("asset") == asset_id or item.get("coin") == getattr(self.ss, 'hyperliquid_symbol', None):
+                        oids.append(int(item["oid"]))
+        except Exception:
+            pass
+
+        if not oids:
+            return {"status": "ok"}
+
+        return await self.cancel_batch([str(oid) for oid in oids])
     
     async def close_session(self) -> None:
         """

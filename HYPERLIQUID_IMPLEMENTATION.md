@@ -40,7 +40,7 @@ Update `parameters.yaml`:
 
 ```yaml
 primary_exchange: Hyperliquid  # Choices: ["Bybit", "Hyperliquid"]
-primary_data_feed: Binance     # Optional: Use Binance as data feed when trading on Hyperliquid
+primary_data_feed: Binance     # Optional: Choices: ["Binance", "Bybit", "Hyperliquid"] - Additional market data feed
 hyperliquid_symbol: ETH        # Hyperliquid symbol (format may differ from Bybit)
 ```
 
@@ -55,10 +55,13 @@ The system now supports both Bybit and Hyperliquid as primary exchanges:
 
 ### 2. Optional Data Feeds
 
-Just like Bybit can use Binance as an optional data feed, Hyperliquid can use Binance:
+The system supports multiple optional data feeds:
 
-- **Hyperliquid + Binance**: Use Binance market data for additional signals
-- **Hyperliquid only**: Use only Hyperliquid data
+- **Bybit (primary) + Binance (feed)**: Use Binance market data for additional signals
+- **Bybit (primary) + Hyperliquid (feed)**: Use Hyperliquid market data for additional signals
+- **Hyperliquid (primary) + Binance (feed)**: Use Binance market data for additional signals
+- **Hyperliquid (primary) + Bybit (feed)**: Use Bybit market data for additional signals
+- **Exchange only**: Use only the primary exchange data
 
 ### 3. Symbol Agnostic
 
@@ -132,7 +135,7 @@ The system works without it, but signing will be more reliable with the SDK.
 
 1. Set `primary_exchange: Hyperliquid` in `parameters.yaml`
 2. Set `hyperliquid_symbol: ETH` (or your desired symbol)
-3. Optionally set `primary_data_feed: Binance` to use Binance as data source
+3. Optionally set `primary_data_feed: Binance` or `primary_data_feed: Bybit` to use additional data source
 4. Ensure wallet address and private key are in `.env` or use API_KEY/API_SECRET
 5. Run: `python main.py`
 
